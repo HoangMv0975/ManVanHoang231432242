@@ -1,0 +1,433 @@
+
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<title>Smart Farm - Lab 3</title>
+
+<script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+<style>
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    padding: 25px;
+    font-family: Arial, sans-serif;
+    background: #eef4f0;
+    color: #24352b;
+}
+
+.container {
+    max-width: 1100px;
+    margin: auto;
+}
+
+h1 {
+    text-align: center;
+    color: #187344;
+}
+
+.status {
+    text-align: center;
+    padding: 12px;
+    margin: 20px 0;
+    border-radius: 8px;
+    background: #ddd;
+}
+
+.cards {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 20px;
+}
+
+.card {
+    background: white;
+    padding: 25px;
+    border-radius: 12px;
+    text-align: center;
+    box-shadow: 0 3px 12px #0001;
+}
+
+.value {
+    font-size: 42px;
+    font-weight: bold;
+    color: #16844b;
+}
+
+.charts {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 20px;
+    margin-top: 20px;
+}
+
+.chart {
+    background: white;
+    padding: 20px;
+    border-radius: 12px;
+}
+
+.control {
+    background: white;
+    padding: 25px;
+    margin-top: 20px;
+    border-radius: 12px;
+    text-align: center;
+}
+
+button {
+    border: none;
+    padding: 14px 28px;
+    border-radius: 8px;
+    margin: 10px;
+    color: white;
+    cursor: pointer;
+    font-size: 16px;
+}
+
+.on {
+    background: #159447;
+}
+
+.off {
+    background: #d94343;
+}
+
+button:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+@media(max-width: 650px) {
+    .cards, .charts {
+        grid-template-columns: 1fr;
+    }
+}
+</style>
+</head>
+
+<body>
+
+<div class="container">
+
+<h1>SMART FARM - LAB 3</h1>
+
+<p style="text-align:center">
+Hệ thống giám sát môi trường vườn cây công nghiệp
+</p>
+
+<div class="status" id="mqttStatus">
+Đang kết nối MQTT...
+</div>
+
+<!-- THE HIEN NHIET DO VA DO AM -->
+<div class="cards">
+
+    <div class="card">
+        <h2>Nhiệt độ</h2>
+        <div class="value" id="temperature">
+            -- °C
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>Độ ẩm</h2>
+        <div class="value" id="humidity">
+            -- %
+        </div>
+    </div>
+
+</div>
+
+<!-- BIEU DO -->
+<div class="charts">
+
+    <div class="chart">
+        <h3>Biểu đồ nhiệt độ</h3>
+        <canvas id="tempChart"></canvas>
+    </div>
+
+    <div class="chart">
+        <h3>Biểu đồ độ ẩm</h3>
+        <canvas id="humidityChart"></canvas>
+    </div>
+
+</div>
+
+<!-- DIEU KHIEN -->
+<div class="control">
+
+    <h2>Điều khiển thiết bị</h2>
+
+    <p>Máy bơm: <b id="pumpState">OFF</b></p>
+
+    <button id="pumpBtn" class="off" disabled>
+        BẬT MÁY BƠM
+    </button>
+
+    <hr>
+
+    <p>Quạt: <b id="fanState">OFF</b></p>
+
+    <button id="fanBtn" class="off" disabled>
+        BẬT QUẠT
+    </button>
+
+</div>
+
+</div>
+
+<script>
+
+// MQTT BROKER
+const BROKER =
+'wss://broker.hivemq.com:8884/mqtt';
+
+// MQTT TOPIC
+const TOPIC_DATA =
+'lab3/vuoncongnghiep/esp32/data';
+
+const TOPIC_PUMP_CMD =
+'lab3/vuoncongnghiep/esp32/pump/cmd';
+
+const TOPIC_FAN_CMD =
+'lab3/vuoncongnghiep/esp32/fan/cmd';
+
+const TOPIC_PUMP_STATE =
+'lab3/vuoncongnghiep/esp32/pump/state';
+
+const TOPIC_FAN_STATE =
+'lab3/vuoncongnghiep/esp32/fan/state';
+
+// TRANG THAI THIET BI
+let pumpOn = false;
+let fanOn = false;
+
+// KHOI TAO MQTT
+const client = mqtt.connect(BROKER, {
+    clientId: 'WebLab3_' +
+        Math.random().toString(16).substring(2, 10),
+    clean: true,
+    connectTimeout: 5000,
+    reconnectPeriod: 2000
+});
+
+// HIEN THI TRANG THAI MQTT
+client.on('connect', function() {
+
+    document.getElementById('mqttStatus').innerText =
+        'Đã kết nối MQTT Broker';
+
+    document.getElementById('mqttStatus').style.background =
+        '#b9efc8';
+
+    document.getElementById('pumpBtn').disabled = false;
+    document.getElementById('fanBtn').disabled = false;
+
+    client.subscribe([
+        TOPIC_DATA,
+        TOPIC_PUMP_STATE,
+        TOPIC_FAN_STATE
+    ]);
+
+});
+
+client.on('offline', function() {
+
+    document.getElementById('mqttStatus').innerText =
+        'Mất kết nối MQTT';
+
+    document.getElementById('mqttStatus').style.background =
+        '#ffd0d0';
+
+});
+
+// KHOI TAO BIEU DO
+const labels = [];
+
+const tempValues = [];
+const humidityValues = [];
+
+const tempChart = new Chart(
+    document.getElementById('tempChart'), {
+
+    type: 'line',
+
+    data: {
+        labels: labels,
+        datasets: [{
+            label: 'Nhiệt độ (°C)',
+            data: tempValues,
+            borderColor: '#ef8b35',
+            tension: 0.3
+        }]
+    },
+
+    options: {
+        responsive: true,
+        animation: false
+    }
+
+});
+
+const humidityChart = new Chart(
+    document.getElementById('humidityChart'), {
+
+    type: 'line',
+
+    data: {
+        labels: labels,
+        datasets: [{
+            label: 'Độ ẩm (%)',
+            data: humidityValues,
+            borderColor: '#218cdd',
+            tension: 0.3
+        }]
+    },
+
+    options: {
+        responsive: true,
+        animation: false
+    }
+
+});
+
+// NHAN DU LIEU TU MQTT
+client.on('message', function(topic, message) {
+
+    const value = message.toString();
+
+    if (topic === TOPIC_DATA) {
+
+        try {
+
+            const data = JSON.parse(value);
+
+            const temp = Number(data.temperature);
+            const hum = Number(data.humidity);
+
+            if (!Number.isFinite(temp) ||
+                !Number.isFinite(hum)) return;
+
+            document.getElementById('temperature')
+                .innerText = temp.toFixed(2) + ' °C';
+
+            document.getElementById('humidity')
+                .innerText = hum.toFixed(2) + ' %';
+
+            const time = new Date().toLocaleTimeString();
+
+            labels.push(time);
+            tempValues.push(temp);
+            humidityValues.push(hum);
+
+            // GIU 20 GIA TRI GAN NHAT
+            if (labels.length > 20) {
+
+                labels.shift();
+                tempValues.shift();
+                humidityValues.shift();
+
+            }
+
+            tempChart.update();
+            humidityChart.update();
+
+        } catch(error) {
+
+            console.log('Loi JSON:', error);
+
+        }
+
+    }
+
+    if (topic === TOPIC_PUMP_STATE) {
+
+        pumpOn = value === 'ON';
+        updateButton('pump');
+
+    }
+
+    if (topic === TOPIC_FAN_STATE) {
+
+        fanOn = value === 'ON';
+        updateButton('fan');
+
+    }
+
+});
+
+// CAP NHAT NUT DIEU KHIEN
+function updateButton(device) {
+
+    if (device === 'pump') {
+
+        document.getElementById('pumpState')
+            .innerText = pumpOn ? 'ON' : 'OFF';
+
+        const btn = document.getElementById('pumpBtn');
+
+        btn.innerText = pumpOn ?
+            'TẮT MÁY BƠM' : 'BẬT MÁY BƠM';
+
+        btn.className = pumpOn ? 'on' : 'off';
+
+    }
+
+    if (device === 'fan') {
+
+        document.getElementById('fanState')
+            .innerText = fanOn ? 'ON' : 'OFF';
+
+        const btn = document.getElementById('fanBtn');
+
+        btn.innerText = fanOn ?
+            'TẮT QUẠT' : 'BẬT QUẠT';
+
+        btn.className = fanOn ? 'on' : 'off';
+
+    }
+
+}
+
+// NUT MAY BOM
+document.getElementById('pumpBtn')
+.addEventListener('click', function() {
+
+    if (!client.connected) return;
+
+    pumpOn = !pumpOn;
+
+    client.publish(
+        TOPIC_PUMP_CMD,
+        pumpOn ? 'ON' : 'OFF'
+    );
+
+});
+
+// NUT QUAT
+document.getElementById('fanBtn')
+.addEventListener('click', function() {
+
+    if (!client.connected) return;
+
+    fanOn = !fanOn;
+
+    client.publish(
+        TOPIC_FAN_CMD,
+        fanOn ? 'ON' : 'OFF'
+    );
+
+});
+
+</script>
+
+</body>
+</html>
